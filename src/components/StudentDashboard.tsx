@@ -21,24 +21,24 @@ const StudentDashboard: React.FC = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!currentUser || currentUser.role !== 'student') return;
+    if (!currentUser || currentUser.role !== 'student' || !db) return;
 
     // Fetch upcoming lessons
     const lessonsQuery = query(
       collection(db, 'lessons'),
-      where('studentId', '==', currentUser.id),
+              where('studentId', '==', currentUser.id),
       where('status', '==', 'scheduled'),
       orderBy('startTime', 'asc')
     );
 
     const unsubscribeLessons = onSnapshot(lessonsQuery, (snapshot) => {
       const lessons = snapshot.docs.map(doc => ({
-        id: doc.id,
+                id: doc.id,
         ...doc.data()
       })) as Lesson[];
       
       // Filter to only show future lessons
-      const now = new Date();
+            const now = new Date();
       const futureLessons = lessons.filter(lesson => 
         toDate(lesson.startTime) > now
       );
@@ -49,6 +49,8 @@ const StudentDashboard: React.FC = () => {
     // Fetch lesson balance
     const fetchLessonBalance = async () => {
       try {
+        if (!db) return;
+        
         const balanceDoc = await getDoc(doc(db, 'lessonBalances', currentUser.id));
         if (balanceDoc.exists()) {
           setLessonBalance(balanceDoc.data() as StudentLessonBalance);
@@ -101,8 +103,8 @@ const StudentDashboard: React.FC = () => {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h2 className="text-xl font-bold text-gray-900 flex items-center mb-2">
-              <div className="w-10 h-10 bg-primary-100 rounded-xl flex items-center justify-center mr-3">
-                <BookOpen className="h-5 w-5 text-primary-600" />
+          <div className="w-10 h-10 bg-primary-100 rounded-xl flex items-center justify-center mr-3">
+            <BookOpen className="h-5 w-5 text-primary-600" />
               </div>
               Lesson Balance
             </h2>
@@ -119,7 +121,7 @@ const StudentDashboard: React.FC = () => {
             </div>
           </div>
         </div>
-        
+
         {lessonBalance && lessonBalance.remainingLessons === 0 && (
           <div className="bg-gradient-to-r from-yellow-50 to-orange-50 border border-yellow-200 rounded-xl p-6">
             <div className="flex items-start space-x-4">
@@ -214,7 +216,7 @@ const StudentDashboard: React.FC = () => {
 
       {/* Quick Actions & Summary */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div className="card">
+      <div className="card">
           <h3 className="text-xl font-bold text-gray-900 mb-6 flex items-center">
             <div className="w-8 h-8 bg-primary-100 rounded-lg flex items-center justify-center mr-3">
               <Plus className="h-4 w-4 text-primary-600" />
@@ -232,7 +234,7 @@ const StudentDashboard: React.FC = () => {
             </button>
           </div>
         </div>
-
+        
         <div className="card">
           <h3 className="text-xl font-bold text-gray-900 mb-6 flex items-center">
             <div className="w-8 h-8 bg-secondary-100 rounded-lg flex items-center justify-center mr-3">
@@ -254,7 +256,7 @@ const StudentDashboard: React.FC = () => {
               <span className="font-bold text-lg bg-gradient-to-r from-primary-600 to-primary-700 bg-clip-text text-transparent">{lessonBalance?.remainingLessons || 0}</span>
             </div>
           </div>
-        </div>
+          </div>
       </div>
     </div>
   );

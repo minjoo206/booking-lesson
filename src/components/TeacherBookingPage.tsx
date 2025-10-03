@@ -88,6 +88,10 @@ const TeacherBookingPage: React.FC = () => {
         // In a real app, you'd look up the teacher by their custom slug
         const teacherId = 'XVcZhgJOtUeZ7vcvsQPodNyPW5I3'; // Minjoo's ID
         
+        if (!db) {
+          throw new Error('Firebase not available');
+        }
+        
         const teacherSettingsRef = doc(db, 'teacherSettings', teacherId);
         const settingsDoc = await getDoc(teacherSettingsRef);
 
@@ -113,6 +117,25 @@ const TeacherBookingPage: React.FC = () => {
         await loadTeacherTimeSlots(teacherId);
       } catch (error) {
         console.error('Error fetching teacher data:', error);
+        
+        // Fallback teacher data when Firebase is not available
+        setTeacher({
+          id: 'XVcZhgJOtUeZ7vcvsQPodNyPW5I3',
+          name: 'Minjoo Kim',
+          email: 'minjoo@example.com',
+          bookingPageTitle: 'Korean Lessons with Minjoo',
+          description: 'Learn Korean with me! Experienced teacher with 5+ years of teaching experience.',
+          rating: 4.9,
+          totalLessons: 150,
+          languages: ['Korean', 'English'],
+          specialties: ['Conversational Korean', 'Business Korean', 'Korean for Beginners'],
+          meetingRoom: 'google-meet',
+          customMeetingRoom: '',
+          avatar: ''
+        });
+        
+        // Load mock time slots
+        await loadTeacherTimeSlots('XVcZhgJOtUeZ7vcvsQPodNyPW5I3');
       } finally {
         setLoading(false);
       }

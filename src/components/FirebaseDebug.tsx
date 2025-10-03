@@ -12,6 +12,12 @@ const FirebaseDebug: React.FC = () => {
   const testFirebaseConnection = async () => {
     setDebugResults([]);
     
+    if (!db) {
+      addResult('❌ Firebase is not initialized or configured');
+      addResult('Please check your environment variables');
+      return;
+    }
+    
     try {
       // Test bookings collection
       addResult('Testing bookings collection access...');
