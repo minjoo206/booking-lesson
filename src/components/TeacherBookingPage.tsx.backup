@@ -1,0 +1,1289 @@
+import React, { useState, useEffect } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { Calendar, Clock, User, Star, Video, CheckCircle, ShoppingCart, X, CreditCard, Check } from 'lucide-react';
+import { db } from '../firebase/config';
+import { doc, getDoc, collection, getDocs, setDoc, updateDoc, serverTimestamp, query, where } from 'firebase/firestore';
+import { useAuth } from '../contexts/AuthContext';
+import { checkAllSlotsAvailability } from '../utils/bookingUtils';
+
+interface Teacher {
+  id: string;
+  name: string;
+  email: string;
+  bookingPageTitle: string;
+  description: string;
+  rating: number;
+  totalLessons: number;
+  languages: string[];
+  specialties: string[];
+  meetingRoom: 'google-meet' | 'zoom' | 'other';
+  customMeetingRoom?: string;
+  avatar?: string;
+}
+
+interface TimeSlot {
+  id: string;
+  date: string;
+  time: string;
+  available: boolean;
+  duration: number;
+  lessonType?: '1on1' | 'group';
+  groupSize?: number;
+  currentBookings?: number;
+  maxGroupSize?: number;
+}
+
+// Function to track teacher visits
+const trackTeacherVisit = async (studentId: string, teacherId: string, teacherName: string, bookingLink: string) => {
+  if (!db || !studentId) return;
+  
+  try {
+    const savedTeachersRef = doc(db, 'savedTeachers', studentId);
+    const savedTeachersDoc = await getDoc(savedTeachersRef);
+    
+    const teacherInfo = {
+      teacherId: teacherId,
+      teacherName: teacherName,
+      bookingLink: bookingLink,
+      lastVisited: serverTimestamp(),
+      visitCount: 1,
+      isFavorite: false,
+      totalBookings: 0,
+      savedAt: serverTimestamp(),
+    };
+    
+    if (savedTeachersDoc.exists()) {
+      const existingData = savedTeachersDoc.data();
+      const existingTeacher = existingData.teachers?.find((t: any) => t.teacherId === teacherId);
+      
+      if (existingTeacher) {
+        // Update existing teacher with visit info
+        const updatedTeachers = existingData.teachers.map((t: any) => 
+          t.teacherId === teacherId 
+            ? { 
+                ...t, 
+                lastVisited: serverTimestamp(),
+                visitCount: (t.visitCount || 0) + 1
+              }
+            : t
+        );
+        await updateDoc(savedTeachersRef, { teachers: updatedTeachers });
+      } else {
+        // Add new teacher to existing list
+        const updatedTeachers = [...(existingData.teachers || []), teacherInfo];
+        await updateDoc(savedTeachersRef, { teachers: updatedTeachers });
+      }
+    } else {
+      // Create new document
+      await setDoc(savedTeachersRef, {
+        studentId: studentId,
+        teachers: [teacherInfo],
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+  } catch (error) {
+    console.error('Error tracking teacher visit:', error);
+  }
+};
+
+// Currency symbols mapping
+const getCurrencySymbol = (currency: string): string => {
+  const symbols: { [key: string]: string } = {
+    USD: '$', EUR: '€', GBP: '£', JPY: '¥', KRW: '₩', CNY: '¥',
+    AUD: '$', CAD: '$', CHF: 'Fr', INR: '₹', SGD: '$', HKD: '$',
+    NZD: '$', SEK: 'kr', NOK: 'kr', DKK: 'kr', MXN: '$', BRL: 'R$',
+    AED: 'د.إ', THB: '฿'
+  };
+  return symbols[currency] || '$';
+};
+
+const formatPrice = (amount: number, currency: string): string => {
+  const symbol = getCurrencySymbol(currency);
+  // For currencies like KRW and JPY (no decimals)
+  if (['KRW', 'JPY'].includes(currency)) {
+    return `${symbol}${Math.round(amount).toLocaleString()}`;
+  }
+  return `${symbol}${amount.toLocaleString()}`;
+};
+
+// Helper function to check booking availability for all slots using unified function
+const checkSlotAvailabilityForAllSlots = async (
+  teacherId: string,
+  slots: TimeSlot[],
+  lessonType: '1on1' | 'group',
+  maxGroupSize: number
+): Promise<TimeSlot[]> => {
+  if (!db) return slots; // Return original slots if Firebase is disabled
+  
+  try {
+    // Use unified availability checking
+    const availabilityResults = await checkAllSlotsAvailability(
+      teacherId,
+      slots.map(slot => ({ date: slot.date, time: slot.time, duration: slot.duration })),
+      lessonType,
+      maxGroupSize
+    );
+    
+    // Merge results back with original slot data
+    return slots.map(slot => {
+      const availabilityResult = availabilityResults.find(
+        result => result.date === slot.date && result.time === slot.time
+      );
+      
+      if (availabilityResult) {
+        return {
+          ...slot,
+          available: availabilityResult.available,
+          currentBookings: availabilityResult.currentBookings,
+          maxGroupSize: availabilityResult.maxSize
+        };
+      }
+      
+      return slot;
+    });
+    
+  } catch (error) {
+    console.error('Error checking slot availability:', error);
+    return slots; // Return original slots on error
+  }
+};
+
+// Helper function to generate time slots from teacher's availability
+const generateTimeSlotsFromAvailability = (
+  availability: any,
+  classDuration: number,
+  breakDuration: number = 0,
+  daysAhead: number,
+  lessonType: '1on1' | 'group' = '1on1',
+  groupSize: number = 1
+): TimeSlot[] => {
+  const slots: TimeSlot[] = [];
+  const today = new Date();
+  
+  // Generate slots for the next X days
+  for (let dayOffset = 0; dayOffset < daysAhead; dayOffset++) {
+    const currentDate = new Date(today);
+    currentDate.setDate(today.getDate() + dayOffset);
+    
+    // Get day of week (e.g., 'monday', 'tuesday')
+    const dayOfWeek = currentDate.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+    
+    // Check if teacher has availability for this day
+    const dayAvailability = availability[dayOfWeek];
+    
+    if (dayAvailability && Array.isArray(dayAvailability) && dayAvailability.length > 0) {
+      // For each availability window on this day
+      dayAvailability.forEach((window: { start: string; end: string }, windowIndex: number) => {
+        // Parse start and end times
+        const [startHour, startMinute] = window.start.split(':').map(Number);
+        const [endHour, endMinute] = window.end.split(':').map(Number);
+        
+        // Convert to minutes since midnight
+        const startMinutes = startHour * 60 + startMinute;
+        const endMinutes = endHour * 60 + endMinute;
+        
+        // Generate slots within this window (including break time between lessons)
+        let currentSlotStart = startMinutes;
+        let slotIndex = 0;
+        
+        while (currentSlotStart + classDuration <= endMinutes) {
+          const slotHour = Math.floor(currentSlotStart / 60);
+          const slotMinute = currentSlotStart % 60;
+          
+          // Format time as "HH:MM AM/PM"
+          const period = slotHour >= 12 ? 'PM' : 'AM';
+          const displayHour = slotHour === 0 ? 12 : slotHour > 12 ? slotHour - 12 : slotHour;
+          const timeString = `${displayHour}:${slotMinute.toString().padStart(2, '0')} ${period}`;
+          
+          // Format date
+          const dateString = currentDate.toLocaleDateString('en-US', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+          });
+          
+          const slot = {
+            id: `${dayOffset}-${windowIndex}-${slotIndex}`,
+            date: dateString,
+            time: timeString,
+            available: true,
+            duration: classDuration,
+            lessonType: lessonType,
+            groupSize: groupSize
+          };
+          slots.push(slot);
+          
+          // Debug specific dates
+          if (dateString.includes('October 6, 2025') || dateString.includes('October 13, 2025')) {
+            console.log('TeacherBookingPage: Generated slot for', dateString, ':', slot);
+          }
+          
+          // Move to next slot (class duration + break time)
+          currentSlotStart += classDuration + breakDuration;
+          slotIndex++;
+        }
+      });
+    }
+  }
+  
+  return slots;
+};
+
+const TeacherBookingPage: React.FC = () => {
+  const { teacherId, customSlug } = useParams<{ teacherId?: string; customSlug?: string }>();
+  const navigate = useNavigate();
+  const { currentUser, setReturnTo } = useAuth();
+  const [teacher, setTeacher] = useState<Teacher | null>(null);
+  const [availableSlots, setAvailableSlots] = useState<TimeSlot[]>([]);
+  const [selectedSlots, setSelectedSlots] = useState<TimeSlot[]>([]);
+  const [selectedDate, setSelectedDate] = useState<Date | null>(null);
+  const [currentMonth, setCurrentMonth] = useState(new Date());
+  const [isBooking, setIsBooking] = useState(false);
+  const [bookingSuccess, setBookingSuccess] = useState(false);
+  
+  // Booking mode: 'package', 'flexible', or 'buy-lessons'
+  const [bookingMode, setBookingMode] = useState<'package' | 'flexible' | 'buy-lessons'>('flexible');
+  const [packageLessons, setPackageLessons] = useState(5);
+  const [recurringSlot, setRecurringSlot] = useState<TimeSlot | null>(null);
+  const [classPrice, setClassPrice] = useState(20);
+  const [currency, setCurrency] = useState('USD');
+  const [lessonType, setLessonType] = useState<'1on1' | 'group'>('1on1');
+  const [groupSize, setGroupSize] = useState(1);
+  const [isCartOpen, setIsCartOpen] = useState(false);
+  const [actualTeacherId, setActualTeacherId] = useState<string | null>(null);
+  
+  // Lesson packages for buy-lessons mode
+  const [selectedProduct, setSelectedProduct] = useState<{
+    id: string;
+    name: string;
+    lessons: number;
+    price: number;
+    description: string;
+    popular?: boolean;
+  } | null>(null);
+  
+  const lessonPackages = [
+    {
+      id: 'single-lesson',
+      name: 'Single Lesson',
+      lessons: 1,
+      price: classPrice,
+      description: 'Perfect for trying out a lesson'
+    },
+    {
+      id: 'five-lessons',
+      name: '5 Lessons Package',
+      lessons: 5,
+      price: classPrice * 5,
+      description: 'Great value for regular learning',
+      popular: true
+    },
+    {
+      id: 'ten-lessons',
+      name: '10 Lessons Package',
+      lessons: 10,
+      price: classPrice * 10,
+      description: 'Best value for committed learners'
+    }
+  ];
+
+  useEffect(() => {
+    const loadTeacherData = async () => {
+      let resolvedTeacherId = teacherId;
+
+      // If accessing via custom slug, find the teacher ID
+      if (customSlug && !teacherId && db) {
+        try {
+          const teachersQuery = await getDocs(collection(db, 'teachers'));
+          teachersQuery.forEach((doc) => {
+            const data = doc.data();
+            if (data.customLink && data.useCustomLink) {
+              const customSlugFromDB = data.customLink.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+              if (customSlugFromDB === customSlug) {
+                resolvedTeacherId = doc.id;
+              }
+            }
+          });
+        } catch (error) {
+          console.error('Error finding teacher by custom slug:', error);
+        }
+      }
+
+      if (!resolvedTeacherId) return;
+      setActualTeacherId(resolvedTeacherId);
+      console.log('TeacherBookingPage: Resolved teacher ID:', resolvedTeacherId);
+      console.log('TeacherBookingPage: This should match BookingModal for minjoo (XVcZhgJOtUeZ7vcvsQPodNyPW5I3)');
+
+      try {
+        if (!db) {
+          // Mock data if Firebase is disabled
+          const mockTeacher: Teacher = {
+            id: resolvedTeacherId,
+            name: 'Teacher',
+            email: 'teacher@example.com',
+            bookingPageTitle: "Korean Lessons",
+            description: 'Native Korean speaker with teaching experience.',
+            rating: 4.9,
+            totalLessons: 0,
+            languages: ['Korean', 'English'],
+            specialties: ['Conversational Korean'],
+            meetingRoom: 'google-meet',
+          };
+          setTeacher(mockTeacher);
+          setAvailableSlots([]);
+          return;
+        }
+
+        // Load teacher settings from Firebase
+        const teachersRef = doc(db, 'teachers', resolvedTeacherId);
+        const settingsDoc = await getDoc(teachersRef);
+
+        // Load teacher user data (optional for public access)
+        let userData = null;
+        try {
+          const userRef = doc(db, 'users', resolvedTeacherId);
+          const userDoc = await getDoc(userRef);
+          if (userDoc.exists()) {
+            userData = userDoc.data();
+          }
+        } catch (error) {
+          console.log('Could not access user data (public access):', error);
+        }
+
+        if (settingsDoc.exists()) {
+          const settings = settingsDoc.data();
+          console.log('TeacherBookingPage: Teacher settings loaded:', settings);
+          console.log('TeacherBookingPage: Availability data:', JSON.stringify(settings.availability, null, 2));
+          console.log('TeacherBookingPage: Class duration:', settings.classDuration);
+          console.log('TeacherBookingPage: Lesson type:', settings.lessonType);
+          console.log('TeacherBookingPage: Group size:', settings.groupSize);
+          console.log('TeacherBookingPage: Break duration:', settings.breakDuration);
+          console.log('TeacherBookingPage: Repeat weekly:', settings.repeatWeekly);
+
+          const teacherData: Teacher = {
+            id: resolvedTeacherId,
+            name: userData?.name || settings.teacherName || 'Teacher',
+            email: userData?.email || settings.teacherEmail || '',
+            bookingPageTitle: settings.bookingPageTitle || `${userData?.name || 'Teacher'}'s Lessons`,
+            description: settings.description || 'Professional language teacher',
+            rating: 4.9, // This would come from reviews in a real app
+            totalLessons: 0, // This would come from booking history
+            languages: settings.languages || [],
+            specialties: settings.specialties || [],
+            meetingRoom: settings.meetingRoom || 'google-meet',
+            customMeetingRoom: settings.customMeetingRoom,
+          };
+
+          setTeacher(teacherData);
+
+          // Track teacher visit for logged-in users
+          if (currentUser && currentUser.role === 'student') {
+            const bookingLink = customSlug ? `/book/${customSlug}` : `/teacher/${resolvedTeacherId}/book`;
+            trackTeacherVisit(
+              currentUser.id, 
+              resolvedTeacherId, 
+              teacherData.name, 
+              bookingLink
+            );
+          }
+
+          // Generate available slots from teacher's availability
+          if (settings.availability && settings.classDuration) {
+            // If repeat weekly is enabled, show more weeks (60 days), otherwise 14 days
+            const daysAhead = settings.repeatWeekly ? 60 : 14;
+            console.log('TeacherBookingPage: Using daysAhead:', daysAhead, '(repeatWeekly:', settings.repeatWeekly, ')');
+            
+            const slots = generateTimeSlotsFromAvailability(
+              settings.availability,
+              settings.classDuration,
+              settings.breakDuration || 0,
+              daysAhead,
+              settings.lessonType || '1on1',
+              settings.groupSize || 1
+            );
+            
+            console.log('TeacherBookingPage: Generated slots:', slots.length);
+            console.log('TeacherBookingPage: First few slots:', slots.slice(0, 5));
+            console.log('TeacherBookingPage: Slots for Oct 6th:', slots.filter(slot => slot.date.includes('2025-10-06')));
+            
+            // Check existing bookings to mark slots as unavailable
+            const slotsWithAvailability = await checkSlotAvailabilityForAllSlots(
+              resolvedTeacherId,
+              slots,
+              settings.lessonType || '1on1',
+              settings.groupSize || 1
+            );
+            
+            console.log('TeacherBookingPage: Updated slots with availability:', slotsWithAvailability.length);
+            console.log('TeacherBookingPage: Available slots:', slotsWithAvailability.filter(slot => slot.available).length);
+            console.log('TeacherBookingPage: Booked slots:', slotsWithAvailability.filter(slot => !slot.available).length);
+            console.log('TeacherBookingPage: Slots for Oct 6th after availability check:', slotsWithAvailability.filter(slot => slot.date.includes('2025-10-06')));
+            setAvailableSlots(slotsWithAvailability);
+            
+            // Set class price and currency
+            if (settings.classPrice) {
+              setClassPrice(settings.classPrice);
+            }
+            if (settings.currency) {
+              setCurrency(settings.currency);
+            }
+            if (settings.lessonType) {
+              setLessonType(settings.lessonType);
+            }
+            if (settings.groupSize) {
+              setGroupSize(settings.groupSize);
+            }
+            
+            // Auto-select first available date and set calendar month
+            if (slots.length > 0) {
+              const firstSlotDate = new Date(slots[0].date);
+              setSelectedDate(firstSlotDate);
+              setCurrentMonth(firstSlotDate); // Set calendar to show the first available month
+            }
+          } else {
+            setAvailableSlots([]);
+          }
+        } else {
+          // Teacher hasn't set up their profile yet
+          const mockTeacher: Teacher = {
+            id: resolvedTeacherId,
+            name: userData?.name || 'Teacher',
+            email: userData?.email || '',
+            bookingPageTitle: `${userData?.name || 'Teacher'}'s Lessons`,
+            description: 'Please check back later for availability.',
+            rating: 0,
+            totalLessons: 0,
+            languages: [],
+            specialties: [],
+            meetingRoom: 'google-meet',
+          };
+          setTeacher(mockTeacher);
+          setAvailableSlots([]);
+        }
+      } catch (error) {
+        console.error('Error loading teacher data:', error);
+      }
+    };
+
+    loadTeacherData();
+  }, [teacherId, customSlug]);
+
+  const handleBookLesson = async () => {
+    // Set the return URL in auth context for login redirect
+    const returnPath = customSlug ? `/book/${customSlug}` : `/teacher/${actualTeacherId}/book`;
+    setReturnTo(returnPath);
+    
+    // Redirect to checkout for payment (both guests and logged-in users)
+    navigate('/checkout', { 
+      state: { 
+        returnTo: returnPath,
+        teacherId: actualTeacherId, // Add teacherId to state
+        selectedSlots: bookingMode === 'package' && recurringSlot 
+          ? Array(packageLessons).fill(recurringSlot) 
+          : selectedSlots,
+        teacherName: teacher?.name || 'Teacher',
+        bookingMode,
+        packageLessons,
+        recurringSlot,
+        classPrice,
+        currency,
+        isLoggedIn: !!currentUser,
+        userEmail: currentUser?.email
+      } 
+    });
+  };
+
+  // Helper function to get dates with available slots
+  const getDatesWithSlots = () => {
+    const dates = new Set<string>();
+    availableSlots.forEach(slot => {
+      const date = new Date(slot.date);
+      dates.add(date.toDateString());
+    });
+    return dates;
+  };
+
+  // Calendar rendering function
+  const renderCalendar = () => {
+    const year = currentMonth.getFullYear();
+    const month = currentMonth.getMonth();
+    
+    // Get first day of month and number of days
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    const daysInMonth = lastDay.getDate();
+    const startingDayOfWeek = firstDay.getDay();
+    
+    // Get dates with available slots
+    const datesWithSlots = getDatesWithSlots();
+    
+    // Create calendar grid
+    const calendarDays = [];
+    
+    // Add empty cells for days before month starts
+    for (let i = 0; i < startingDayOfWeek; i++) {
+      calendarDays.push(<div key={`empty-${i}`} className="h-12"></div>);
+    }
+    
+    // Add days of month
+    for (let day = 1; day <= daysInMonth; day++) {
+      const date = new Date(year, month, day);
+      const dateString = date.toDateString();
+      const hasSlots = datesWithSlots.has(dateString);
+      const isSelected = selectedDate?.toDateString() === dateString;
+      const isPast = date < new Date(new Date().setHours(0, 0, 0, 0));
+      
+      // Show all dates, but style them differently based on availability
+      calendarDays.push(
+        <button
+          key={day}
+          onClick={() => hasSlots && !isPast && setSelectedDate(date)}
+          disabled={!hasSlots || isPast}
+          className={`h-12 flex items-center justify-center rounded-full font-medium transition-all ${
+            isSelected
+              ? 'bg-primary-600 text-white shadow-soft'
+              : hasSlots && !isPast
+              ? 'border-2 border-green-400 text-gray-900 hover:bg-green-50'
+              : isPast
+              ? 'text-gray-300 cursor-not-allowed'
+              : 'text-gray-400 cursor-not-allowed'
+          }`}
+        >
+          {day}
+        </button>
+      );
+    }
+    
+    return (
+      <div>
+        {/* Month Navigation */}
+        <div className="flex items-center justify-between mb-4">
+          <button
+            onClick={() => setCurrentMonth(new Date(year, month - 1))}
+            className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+          <h3 className="text-lg font-semibold">
+            {currentMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+          </h3>
+          <button
+            onClick={() => setCurrentMonth(new Date(year, month + 1))}
+            className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
+        </div>
+        
+        {/* Day Headers */}
+        <div className="grid grid-cols-7 gap-2 mb-2">
+          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
+            <div key={day} className="text-center text-sm font-medium text-gray-600">
+              {day}
+            </div>
+          ))}
+        </div>
+        
+        {/* Calendar Grid */}
+        <div className="grid grid-cols-7 gap-2">
+          {calendarDays}
+        </div>
+        
+        {/* Legend */}
+        <div className="mt-6 flex items-center justify-center space-x-4 text-sm">
+          <div className="flex items-center space-x-2">
+            <div className="w-6 h-6 border-2 border-green-400 rounded-full"></div>
+            <span className="text-gray-600">Available</span>
+          </div>
+          <div className="flex items-center space-x-2">
+            <div className="w-6 h-6 bg-primary-600 rounded-full"></div>
+            <span className="text-gray-600">Selected</span>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  if (!teacher) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 via-white to-secondary-50">
+        <div className="text-center">
+          <div className="w-16 h-16 border-4 border-primary-200 border-t-primary-600 rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading teacher profile...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (bookingSuccess) {
+    return (
+      <div className="min-h-screen py-8 bg-gradient-to-br from-primary-50 via-white to-secondary-50">
+        <div className="max-w-4xl mx-auto px-4">
+          <div className="text-center mb-8">
+            <div className="mx-auto w-20 h-20 bg-green-500 rounded-full flex items-center justify-center mb-6">
+              <CheckCircle className="h-10 w-10 text-white" />
+            </div>
+            <h1 className="text-3xl font-bold text-gray-900 mb-4">
+              {bookingMode === 'package' 
+                ? `${packageLessons} Weekly Lesson${packageLessons > 1 ? 's' : ''} Booked Successfully!`
+                : `${selectedSlots.length} Lesson${selectedSlots.length > 1 ? 's' : ''} Booked Successfully!`
+              }
+            </h1>
+            <p className="text-lg text-gray-600 mb-8">
+              {bookingMode === 'package'
+                ? `Your ${packageLessons} weekly lesson${packageLessons > 1 ? 's' : ''} with ${teacher.name} ${packageLessons === 1 ? 'has' : 'have'} been confirmed`
+                : `Your ${selectedSlots.length === 1 ? 'lesson' : 'lessons'} with ${teacher.name} ${selectedSlots.length === 1 ? 'has' : 'have'} been confirmed`
+              }
+            </p>
+          </div>
+
+          <div className="card max-w-2xl mx-auto mb-8">
+            <div className="p-8">
+              <h2 className="text-2xl font-bold text-gray-900 mb-6">Booking Details</h2>
+              
+              <div className="space-y-6">
+                <div className="flex items-center space-x-3">
+                  <User className="h-5 w-5 text-primary-600" />
+                  <span className="text-gray-700"><strong>Teacher:</strong> {teacher.name}</span>
+                </div>
+                
+                <div>
+                  <h3 className="font-semibold text-gray-900 mb-3">Your Lessons:</h3>
+                  <div className="space-y-3">
+                    {bookingMode === 'package' && recurringSlot ? (
+                      <div className="bg-primary-50 p-4 rounded-lg border border-primary-200">
+                        <div className="flex items-center justify-between mb-3">
+                          <div>
+                            <p className="font-medium text-gray-900">Weekly Package</p>
+                            <p className="text-sm text-gray-600">
+                              Every {new Date(recurringSlot.date).toLocaleDateString('en-US', { weekday: 'long' })} at {recurringSlot.time}
+                            </p>
+                            <p className="text-sm text-gray-600">{packageLessons} weeks ({recurringSlot.duration}min each)</p>
+                          </div>
+                          <Calendar className="h-6 w-6 text-primary-600" />
+                        </div>
+                        <div className="text-xs text-gray-600 space-y-1">
+                          {Array.from({ length: packageLessons }, (_, i) => {
+                            const weekDate = new Date(recurringSlot.date);
+                            weekDate.setDate(weekDate.getDate() + (i * 7));
+                            return (
+                              <p key={i}>
+                                Week {i + 1}: {weekDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                              </p>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : (
+                      selectedSlots.map((slot, index) => (
+                        <div key={slot.id} className="bg-gray-50 p-4 rounded-lg">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="font-medium text-gray-900">Lesson {index + 1}</p>
+                              <p className="text-sm text-gray-600">{slot.date}</p>
+                              <p className="text-sm text-gray-600">{slot.time} ({slot.duration}min)</p>
+                            </div>
+                            <Video className="h-5 w-5 text-primary-600" />
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+                
+                <div className="bg-primary-50 border border-primary-200 p-4 rounded-lg">
+                  <p className="text-sm text-primary-800">
+                    📧 Confirmation emails with Google Meet links have been sent to your email address
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="text-center">
+            <button
+              onClick={() => navigate('/')}
+              className="btn-primary"
+            >
+              Book More Lessons
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen py-8 bg-gradient-to-br from-primary-50 via-white to-secondary-50">
+      <div className="max-w-6xl mx-auto px-4">
+        {/* Teacher Profile Header */}
+        <div className="card mb-8">
+          <div className="p-8">
+            <div className="flex flex-col md:flex-row items-start md:items-center space-y-4 md:space-y-0 md:space-x-6">
+              <div className="w-24 h-24 bg-gradient-to-br from-primary-400 to-primary-600 rounded-full flex items-center justify-center">
+                <User className="h-12 w-12 text-white" />
+              </div>
+              
+              <div className="flex-1">
+                <h1 className="text-3xl font-bold text-gray-900 mb-2">{teacher.bookingPageTitle}</h1>
+                <p className="text-gray-600 mb-4">{teacher.description}</p>
+                
+                <div className="flex flex-wrap items-center gap-4 mb-4">
+                  <div className="flex items-center space-x-1">
+                    <Star className="h-5 w-5 text-yellow-400 fill-current" />
+                    <span className="font-semibold text-gray-900">{teacher.rating}</span>
+                    <span className="text-gray-600">({teacher.totalLessons} lessons)</span>
+                  </div>
+                  
+                  <div className="flex items-center space-x-2">
+                    <span className="text-gray-600">Languages:</span>
+                    <div className="flex space-x-1">
+                      {teacher.languages.map((lang, index) => (
+                        <span key={index} className="px-2 py-1 bg-primary-100 text-primary-700 rounded-full text-sm">
+                          {lang}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-2">
+                  <span className="text-gray-600">Specialties:</span>
+                  <div className="flex flex-wrap gap-1">
+                    {teacher.specialties.map((specialty, index) => (
+                      <span key={index} className="px-2 py-1 bg-secondary-100 text-secondary-700 rounded-full text-sm">
+                        {specialty}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-2 mt-2">
+                  <span className="text-gray-600">Lesson Type:</span>
+                  <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+                    lessonType === '1on1' 
+                      ? 'bg-blue-100 text-blue-700' 
+                      : 'bg-purple-100 text-purple-700'
+                  }`}>
+                    {lessonType === '1on1' ? '1:1 Private Lessons' : `Group Lessons (Max ${groupSize})`}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Booking Mode Selection */}
+        <div className="card mb-6">
+          <div className="p-6">
+            <h2 className="text-2xl font-bold text-gray-900 mb-4">How would you like to book?</h2>
+            
+            <div className="grid md:grid-cols-3 gap-4">
+              {/* Package Booking */}
+              <button
+                onClick={() => {
+                  setBookingMode('package');
+                  setSelectedSlots([]);
+                }}
+                className={`p-6 rounded-lg border-2 transition-all text-left ${
+                  bookingMode === 'package'
+                    ? 'border-primary-500 bg-primary-50'
+                    : 'border-gray-200 hover:border-primary-300'
+                }`}
+              >
+                <div className="flex items-start justify-between mb-3">
+                  <div className="w-12 h-12 rounded-full bg-primary-100 flex items-center justify-center">
+                    <Calendar className="h-6 w-6 text-primary-600" />
+                  </div>
+                  {bookingMode === 'package' && (
+                    <div className="w-6 h-6 rounded-full bg-primary-600 flex items-center justify-center">
+                      <CheckCircle className="h-4 w-4 text-white" />
+                    </div>
+                  )}
+                </div>
+                <h3 className="text-lg font-bold text-gray-900 mb-2">Package Booking</h3>
+                <p className="text-sm text-gray-600 mb-3">
+                  Book multiple lessons at the same time each week
+                </p>
+                <p className="text-xs text-gray-500">
+                  Perfect for: "Every Monday 2pm for 5 weeks"
+                </p>
+              </button>
+
+              {/* Flexible Booking */}
+              <button
+                onClick={() => {
+                  setBookingMode('flexible');
+                  setRecurringSlot(null);
+                }}
+                className={`p-6 rounded-lg border-2 transition-all text-left ${
+                  bookingMode === 'flexible'
+                    ? 'border-primary-500 bg-primary-50'
+                    : 'border-gray-200 hover:border-primary-300'
+                }`}
+              >
+                <div className="flex items-start justify-between mb-3">
+                  <div className="w-12 h-12 rounded-full bg-secondary-100 flex items-center justify-center">
+                    <Clock className="h-6 w-6 text-secondary-600" />
+                  </div>
+                  {bookingMode === 'flexible' && (
+                    <div className="w-6 h-6 rounded-full bg-primary-600 flex items-center justify-center">
+                      <CheckCircle className="h-4 w-4 text-white" />
+                    </div>
+                  )}
+                </div>
+                <h3 className="text-lg font-bold text-gray-900 mb-2">Flexible Booking</h3>
+                <p className="text-sm text-gray-600 mb-3">
+                  Book lessons at different times as you go
+                </p>
+                <p className="text-xs text-gray-500">
+                  Perfect for: "Different days/times each week"
+                </p>
+              </button>
+
+              {/* Buy Lesson First */}
+              <button
+                onClick={() => {
+                  setBookingMode('buy-lessons');
+                  setSelectedSlots([]);
+                  setRecurringSlot(null);
+                }}
+                className={`p-6 rounded-lg border-2 transition-all text-left ${
+                  bookingMode === 'buy-lessons'
+                    ? 'border-primary-500 bg-primary-50'
+                    : 'border-gray-200 hover:border-primary-300'
+                }`}
+              >
+                <div className="flex items-start justify-between mb-3">
+                  <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center">
+                    <CreditCard className="h-6 w-6 text-green-600" />
+                  </div>
+                  {bookingMode === 'buy-lessons' && (
+                    <div className="w-6 h-6 rounded-full bg-primary-600 flex items-center justify-center">
+                      <CheckCircle className="h-4 w-4 text-white" />
+                    </div>
+                  )}
+                </div>
+                <h3 className="text-lg font-bold text-gray-900 mb-2">Buy Lesson First</h3>
+                <p className="text-sm text-gray-600 mb-3">
+                  Purchase lesson packages and book later
+                </p>
+                <p className="text-xs text-gray-500">
+                  Perfect for: "Pay now, schedule later"
+                </p>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Available Time Slots with Calendar or Payment Options */}
+        <div className="card">
+          <div className="p-8">
+            {bookingMode === 'buy-lessons' ? (
+              <h2 className="text-2xl font-bold text-gray-900 mb-6">Choose Your Lesson Package</h2>
+            ) : (
+              <h2 className="text-2xl font-bold text-gray-900 mb-6">
+                {bookingMode === 'package' ? 'Select Your Weekly Time Slot' : 'Select Date & Time'}
+              </h2>
+            )}
+            
+            {bookingMode === 'buy-lessons' ? (
+              // Payment Options Layout
+              <div className="space-y-8">
+                {selectedProduct ? (
+                  // Selected Product Payment Form
+                  <div className="max-w-2xl mx-auto">
+                    <div className="bg-white rounded-lg shadow-lg overflow-hidden">
+                      <div className="p-6">
+                        <div className="flex items-center justify-between mb-6">
+                          <h3 className="text-2xl font-bold text-gray-900">Complete Your Purchase</h3>
+                          <button
+                            onClick={() => setSelectedProduct(null)}
+                            className="text-gray-400 hover:text-gray-600 text-2xl"
+                          >
+                            ×
+                          </button>
+                        </div>
+
+                        <div className="bg-gray-50 p-4 rounded-lg mb-6">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <h4 className="font-semibold text-gray-900">{selectedProduct.name}</h4>
+                              <p className="text-gray-600">{selectedProduct.description}</p>
+                            </div>
+                            <div className="text-right">
+                              <div className="text-2xl font-bold text-primary-600">${selectedProduct.price}</div>
+                              <div className="text-sm text-gray-500">{selectedProduct.lessons} lessons</div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="space-y-6">
+                          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                            <h4 className="font-medium text-yellow-800 mb-2">Demo Mode</h4>
+                            <p className="text-yellow-700 text-sm">
+                              This is a demo payment page. In a real application, you would integrate with Stripe for secure payment processing.
+                            </p>
+                          </div>
+
+                          <button
+                            onClick={() => {
+                              // Demo payment processing
+                              alert(`Demo: Payment of $${selectedProduct.price} for ${selectedProduct.lessons} lessons processed successfully!`);
+                              setSelectedProduct(null);
+                            }}
+                            className="w-full bg-primary-600 text-white py-3 px-4 rounded-md font-medium hover:bg-primary-700 flex items-center justify-center"
+                          >
+                            <CreditCard className="h-4 w-4 mr-2" />
+                            Pay ${selectedProduct.price}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  // Package Selection Grid
+                  <div className="grid md:grid-cols-3 gap-6">
+                    {lessonPackages.map((product) => (
+                      <div
+                        key={product.id}
+                        className={`bg-white rounded-lg shadow-lg overflow-hidden relative transform hover:scale-105 transition-transform duration-200 cursor-pointer ${
+                          product.popular ? 'ring-2 ring-primary-500' : ''
+                        }`}
+                        onClick={() => setSelectedProduct(product)}
+                      >
+                        {product.popular && (
+                          <div className="absolute top-0 right-0 bg-yellow-400 text-white px-3 py-1 text-xs font-medium rounded-bl-lg">
+                            <Star className="h-3 w-3 inline mr-1" />
+                            Best Value
+                          </div>
+                        )}
+                        
+                        <div className="p-6">
+                          <h3 className="text-xl font-bold text-gray-900 mb-2">{product.name}</h3>
+                          <div className="text-3xl font-bold text-primary-600 mb-2">${product.price}</div>
+                          <div className="text-sm text-gray-500 mb-4">${classPrice} per lesson</div>
+                          <p className="text-gray-600 mb-4">{product.description}</p>
+                          
+                          <div className="space-y-2">
+                            <div className="flex items-center text-sm text-gray-600">
+                              <Check className="h-4 w-4 text-green-500 mr-2" />
+                              {product.lessons} lessons included
+                            </div>
+                            <div className="flex items-center text-sm text-gray-600">
+                              <Check className="h-4 w-4 text-green-500 mr-2" />
+                              Valid for 6 months
+                            </div>
+                            <div className="flex items-center text-sm text-gray-600">
+                              <Check className="h-4 w-4 text-green-500 mr-2" />
+                              Book with any teacher
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              // Original Calendar Layout
+              <div className="grid lg:grid-cols-2 gap-8">
+              {/* Left: Time Slots */}
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                  {selectedDate 
+                    ? selectedDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+                    : 'Loading available dates...'}
+                </h3>
+                
+                {selectedDate ? (
+                  <div className="space-y-2">
+                    {bookingMode === 'package' && (
+                      <div className="mb-4 p-4 bg-primary-50 rounded-lg border border-primary-200">
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Number of Lessons
+                        </label>
+                        <select
+                          value={packageLessons}
+                          onChange={(e) => setPackageLessons(Number(e.target.value))}
+                          className="input-field"
+                        >
+                          <option value={1}>1 lesson</option>
+                          <option value={5}>5 lessons</option>
+                          <option value={10}>10 lessons</option>
+                          <option value={20}>20 lessons</option>
+                        </select>
+                        <p className="text-xs text-gray-600 mt-2">
+                          Choose a time slot below - it will repeat weekly for {packageLessons} week{packageLessons > 1 ? 's' : ''}
+                        </p>
+                      </div>
+                    )}
+
+                    {availableSlots
+                      .filter(slot => {
+                        const slotDate = new Date(slot.date);
+                        return slotDate.toDateString() === selectedDate.toDateString();
+                      })
+                      .map((slot) => {
+                        const isSelected = bookingMode === 'package' 
+                          ? recurringSlot?.id === slot.id
+                          : selectedSlots.some(s => s.id === slot.id);
+                        
+                        return (
+                          <button
+                            key={slot.id}
+                            onClick={() => {
+                              if (!slot.available) return; // Don't allow clicking on unavailable slots
+                              
+                              if (bookingMode === 'package') {
+                                setRecurringSlot(recurringSlot?.id === slot.id ? null : slot);
+                              } else {
+                                if (isSelected) {
+                                  setSelectedSlots(selectedSlots.filter(s => s.id !== slot.id));
+                                } else {
+                                  setSelectedSlots([...selectedSlots, slot]);
+                                }
+                              }
+                            }}
+                            disabled={!slot.available}
+                            className={`w-full px-6 py-3 rounded-lg font-medium transition-all duration-200 flex items-center justify-between ${
+                              !slot.available
+                                ? 'bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed opacity-50'
+                                : isSelected
+                                  ? 'bg-primary-100 text-primary-700 shadow-sm border-2 border-primary-300'
+                                  : 'bg-gray-100 text-gray-700 hover:bg-primary-50 hover:text-primary-600'
+                            }`}
+                          >
+                            <div className="flex flex-col items-start">
+                              <span>{slot.time}</span>
+                              <div className="flex items-center space-x-2 text-xs opacity-75">
+                                <span>({slot.duration}min)</span>
+                                {slot.lessonType && (
+                                  <span className={`px-2 py-1 rounded-full text-xs ${
+                                    slot.lessonType === '1on1' 
+                                      ? 'bg-blue-100 text-blue-700' 
+                                      : 'bg-purple-100 text-purple-700'
+                                  }`}>
+                                    {slot.lessonType === '1on1' ? '1:1' : `Group (${slot.groupSize || 1})`}
+                                  </span>
+                                )}
+                                {!slot.available && (
+                                  <span className="px-2 py-1 rounded-full text-xs bg-gray-200 text-gray-500">
+                                    {slot.lessonType === '1on1' ? 'Booked' : `Full (${slot.currentBookings}/${slot.maxGroupSize})`}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex flex-col items-end">
+                              <span className="text-sm opacity-75">{slot.duration}min</span>
+                              {!slot.available && (
+                                <span className="text-xs text-gray-400">Unavailable</span>
+                              )}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    
+                    {bookingMode === 'package' && recurringSlot && selectedDate && (
+                      <div className="mt-4 p-4 bg-green-50 rounded-lg border border-green-200">
+                        <p className="text-sm text-green-800">
+                          <strong>Selected:</strong> {recurringSlot.time} every {selectedDate.toLocaleDateString('en-US', { weekday: 'long' })} for {packageLessons} weeks
+                        </p>
+                        <p className="text-xs text-green-700 mt-1">
+                          Starting from {selectedDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+                        </p>
+                      </div>
+                    )}
+
+                    {bookingMode === 'flexible' && selectedSlots.length > 0 && (
+                      <div className="mt-4 p-4 bg-green-50 rounded-lg border border-green-200">
+                        <p className="text-sm text-green-800">
+                          <strong>Selected:</strong> {selectedSlots.length} lesson{selectedSlots.length > 1 ? 's' : ''}
+                        </p>
+                        <p className="text-xs text-green-700 mt-1">
+                          First lesson: {new Date(selectedSlots.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())[0].date).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })} at {selectedSlots[0].time}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-center py-12 text-gray-500">
+                    <Clock className="h-12 w-12 mx-auto mb-3 text-gray-400" />
+                    <p>Choose a date from the calendar →</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Right: Calendar */}
+              <div>
+                {renderCalendar()}
+              </div>
+            </div>
+
+            {/* Floating Cart Button & Panel - Only show for package and flexible modes */}
+            {((bookingMode === 'flexible' && selectedSlots.length > 0) || 
+              (bookingMode === 'package' && recurringSlot)) && (
+              <>
+                {/* Floating Cart Button */}
+                <button
+                  onClick={() => setIsCartOpen(!isCartOpen)}
+                  className="fixed bottom-6 right-6 bg-primary-600 text-white px-6 py-4 rounded-full shadow-2xl hover:bg-primary-700 transition-all duration-200 flex items-center space-x-3 z-40"
+                >
+                  <ShoppingCart className="h-6 w-6" />
+                  <span className="font-semibold">
+                    {bookingMode === 'package' ? packageLessons : selectedSlots.length} Lesson{(bookingMode === 'package' ? packageLessons : selectedSlots.length) > 1 ? 's' : ''}
+                  </span>
+                  <span className="bg-white text-primary-600 px-3 py-1 rounded-full text-sm font-bold">
+                    {formatPrice(bookingMode === 'package' ? packageLessons * classPrice : selectedSlots.length * classPrice, currency)}
+                  </span>
+                </button>
+
+              {/* Cart Slide-up Panel */}
+              {isCartOpen && (
+                <>
+                  {/* Overlay */}
+                <div 
+                  className="fixed inset-0 bg-black bg-opacity-50 z-40"
+                  onClick={() => setIsCartOpen(false)}
+                ></div>
+
+                {/* Cart Panel */}
+                <div className="fixed bottom-0 left-0 right-0 bg-white rounded-t-3xl shadow-2xl z-50 max-h-[80vh] overflow-y-auto animate-slide-up">
+                  <div className="p-6">
+                    {/* Cart Header */}
+                    <div className="flex items-center justify-between mb-6">
+                      <h3 className="text-2xl font-bold text-gray-900 flex items-center">
+                        <ShoppingCart className="h-6 w-6 mr-3 text-primary-600" />
+                        Your Cart
+                      </h3>
+                      <button
+                        onClick={() => setIsCartOpen(false)}
+                        className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+                      >
+                        <X className="h-6 w-6 text-gray-500" />
+                      </button>
+                    </div>
+
+                    {/* Cart Items */}
+                    <div className="space-y-4 mb-6">
+                      {bookingMode === 'package' && recurringSlot && selectedDate ? (
+                        <>
+                          <div className="bg-blue-50 border border-blue-200 p-3 rounded-lg">
+                            <p className="text-sm text-blue-800">
+                              <strong>📅 Lessons start from:</strong> {selectedDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
+                            </p>
+                          </div>
+                          <div className="bg-primary-50 p-4 rounded-lg border border-primary-200">
+                            <div className="flex items-start justify-between">
+                              <div className="flex-1">
+                                <h4 className="font-semibold text-gray-900 mb-1">Weekly Package</h4>
+                                <p className="text-sm text-gray-600">
+                                  Every {selectedDate.toLocaleDateString('en-US', { weekday: 'long' })} at {recurringSlot.time}
+                                </p>
+                                <p className="text-sm text-gray-600">{packageLessons} lessons × {formatPrice(classPrice, currency)}</p>
+                              </div>
+                              <p className="text-xl font-bold text-primary-600">{formatPrice(packageLessons * classPrice, currency)}</p>
+                            </div>
+                          </div>
+                        </>
+                      ) : (
+                        selectedSlots.map((slot, index) => (
+                          <div key={slot.id} className="bg-gray-50 p-4 rounded-lg flex items-center justify-between">
+                            <div className="flex-1">
+                              <p className="font-medium text-gray-900">Lesson {index + 1}</p>
+                              <p className="text-sm text-gray-600">{slot.date}</p>
+                              <p className="text-sm text-gray-600">{slot.time} ({slot.duration}min)</p>
+                            </div>
+                            <div className="flex items-center space-x-4">
+                              <p className="text-lg font-semibold text-gray-900">{formatPrice(classPrice, currency)}</p>
+                              <button
+                                onClick={() => setSelectedSlots(selectedSlots.filter(s => s.id !== slot.id))}
+                                className="p-1 hover:bg-red-100 rounded-full transition-colors"
+                              >
+                                <X className="h-5 w-5 text-red-500" />
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+
+                    {/* Cart Total */}
+                    <div className="border-t border-gray-200 pt-4 mb-6">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-gray-600">
+                                {bookingMode === 'package' ? `${packageLessons} lessons` : `${selectedSlots.length} lesson${selectedSlots.length > 1 ? 's' : ''}`}
+                              </span>
+                              <span className="text-gray-900">
+                                {formatPrice(bookingMode === 'package' ? packageLessons * classPrice : selectedSlots.length * classPrice, currency)}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between text-xl font-bold">
+                              <span className="text-gray-900">Total</span>
+                              <span className="text-primary-600">
+                                {formatPrice(bookingMode === 'package' ? packageLessons * classPrice : selectedSlots.length * classPrice, currency)}
+                              </span>
+                            </div>
+                    </div>
+
+                    {/* Action Buttons */}
+                    {currentUser ? (
+                      <button
+                        onClick={handleBookLesson}
+                        disabled={isBooking}
+                        className="w-full btn-primary py-4 text-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {isBooking ? 'Processing...' : 'Checkout & Book'}
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          // Redirect directly to checkout for payment, where they can sign up/in
+                          const returnPath = customSlug ? `/book/${customSlug}` : `/teacher/${actualTeacherId}/book`;
+                          console.log('TeacherBookingPage: Redirecting to checkout with returnTo URL:', returnPath);
+                          setReturnTo(returnPath);
+                          
+                          navigate('/checkout', { 
+                            state: { 
+                              returnTo: returnPath,
+                              teacherId: actualTeacherId,
+                              selectedSlots: bookingMode === 'package' && recurringSlot 
+                                ? Array(packageLessons).fill(recurringSlot) 
+                                : selectedSlots,
+                              teacherName: teacher?.name || 'Teacher',
+                              bookingMode,
+                              packageLessons,
+                              recurringSlot,
+                              classPrice,
+                              currency,
+                              isLoggedIn: false,
+                              userEmail: ''
+                            }
+                          });
+                        }}
+                        className="w-full btn-primary py-4 text-lg"
+                      >
+                        Book Now
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+          </>
+        )}
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default TeacherBookingPage;
