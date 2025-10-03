@@ -1,46 +1,210 @@
-# Getting Started with Create React App
+# Lesson Booking Website
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+A modern web application for students to find teachers, purchase lesson packages, and book lessons. Built with React, TypeScript, Firebase, and Stripe.
 
-## Available Scripts
+## Features
 
-In the project directory, you can run:
+### For Students
+- **Dashboard**: View upcoming lessons and lesson balance
+- **Lesson Packages**: Purchase 1, 5, or 10 lesson packages with Stripe
+- **Teacher Discovery**: Browse available teachers and their schedules
+- **Booking System**: Book lessons that automatically deduct from lesson balance
+- **Lesson Management**: View lesson history and upcoming appointments
 
-### `npm start`
+### For Teachers
+- **Availability Management**: Set available time slots
+- **Student Management**: View booked lessons and student information
+- **Profile Management**: Update bio, subjects, and hourly rates
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in the browser.
+## Tech Stack
 
-The page will reload if you make edits.\
-You will also see any lint errors in the console.
+- **Frontend**: React 18 with TypeScript
+- **Styling**: Tailwind CSS
+- **Authentication**: Firebase Auth
+- **Database**: Firestore
+- **Payments**: Stripe
+- **Routing**: React Router
+- **Icons**: Lucide React
+- **Date Handling**: date-fns
 
-### `npm test`
+## Getting Started
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+### Prerequisites
 
-### `npm run build`
+- Node.js 16+ and npm
+- Firebase project with Firestore enabled
+- Stripe account for payment processing
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+### Installation
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+1. Clone the repository:
+```bash
+git clone <repository-url>
+cd booking-website
+```
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+2. Install dependencies:
+```bash
+npm install
+```
 
-### `npm run eject`
+3. Set up environment variables:
+```bash
+cp .env.example .env
+```
 
-**Note: this is a one-way operation. Once you `eject`, you can’t go back!**
+4. Configure Firebase:
+   - Create a Firebase project at https://console.firebase.google.com
+   - Enable Authentication and Firestore
+   - Copy your Firebase config to `.env`
 
-If you aren’t satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+5. Configure Stripe:
+   - Create a Stripe account at https://stripe.com
+   - Get your publishable key and add it to `.env`
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you’re on your own.
+6. Start the development server:
+```bash
+npm start
+```
 
-You don’t have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn’t feel obligated to use this feature. However we understand that this tool wouldn’t be useful if you couldn’t customize it when you are ready for it.
+## Project Structure
 
-## Learn More
+```
+src/
+├── components/          # React components
+│   ├── Layout.tsx      # Main layout with navigation
+│   ├── Login.tsx       # Login form
+│   ├── Register.tsx    # Registration form
+│   ├── StudentDashboard.tsx  # Student dashboard
+│   ├── LessonPackages.tsx    # Lesson package purchase
+│   └── TeacherAvailability.tsx # Teacher booking interface
+├── contexts/           # React contexts
+│   └── AuthContext.tsx # Authentication context
+├── firebase/           # Firebase configuration
+│   └── config.ts       # Firebase setup
+├── stripe/             # Stripe configuration
+│   └── config.ts       # Stripe setup
+├── types/              # TypeScript type definitions
+│   └── index.ts        # Application types
+└── App.tsx             # Main application component
+```
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+## Database Schema
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+### Users Collection
+```typescript
+{
+  id: string;
+  email: string;
+  name: string;
+  role: 'student' | 'teacher';
+  createdAt: Date;
+}
+```
+
+### Teachers Collection
+```typescript
+{
+  id: string;
+  name: string;
+  email: string;
+  subjects: string[];
+  bio: string;
+  hourlyRate: number;
+  availability: AvailabilitySlot[];
+}
+```
+
+### Lessons Collection
+```typescript
+{
+  id: string;
+  studentId: string;
+  teacherId: string;
+  startTime: Date;
+  endTime: Date;
+  status: 'scheduled' | 'completed' | 'cancelled';
+  subject: string;
+  notes?: string;
+}
+```
+
+### Lesson Balances Collection
+```typescript
+{
+  studentId: string;
+  totalLessons: number;
+  usedLessons: number;
+  remainingLessons: number;
+  lastUpdated: Date;
+}
+```
+
+### Availability Collection
+```typescript
+{
+  id: string;
+  teacherId: string;
+  startTime: Date;
+  endTime: Date;
+  isBooked: boolean;
+  bookedBy?: string;
+}
+```
+
+## Payment Flow
+
+1. Student selects a lesson package (1, 5, or 10 lessons)
+2. Stripe payment form is displayed
+3. Payment is processed through Stripe
+4. On success, lesson balance is updated in Firestore
+5. Student can now book lessons with teachers
+
+## Booking Flow
+
+1. Student browses available teachers
+2. Selects a teacher and views their availability
+3. Chooses an available time slot
+4. System checks if student has remaining lessons
+5. If yes, lesson is booked and lesson balance is decremented
+6. Availability slot is marked as booked
+
+## Environment Variables
+
+Create a `.env` file with the following variables:
+
+```env
+# Firebase Configuration
+REACT_APP_FIREBASE_API_KEY=your_firebase_api_key
+REACT_APP_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
+REACT_APP_FIREBASE_PROJECT_ID=your_project_id
+REACT_APP_FIREBASE_STORAGE_BUCKET=your_project.appspot.com
+REACT_APP_FIREBASE_MESSAGING_SENDER_ID=123456789
+REACT_APP_FIREBASE_APP_ID=your_app_id
+
+# Stripe Configuration
+REACT_APP_STRIPE_PUBLISHABLE_KEY=pk_test_your_stripe_publishable_key
+```
+
+## Deployment
+
+1. Build the project:
+```bash
+npm run build
+```
+
+2. Deploy to your preferred hosting platform (Vercel, Netlify, etc.)
+
+3. Set up environment variables in your hosting platform
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests if applicable
+5. Submit a pull request
+
+## License
+
+This project is licensed under the MIT License.
