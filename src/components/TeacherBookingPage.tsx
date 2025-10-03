@@ -108,6 +108,9 @@ const TeacherBookingPage: React.FC = () => {
             avatar: data.avatar
           });
         }
+
+        // Load teacher's available time slots
+        await loadTeacherTimeSlots(teacherId);
       } catch (error) {
         console.error('Error fetching teacher data:', error);
       } finally {
@@ -117,6 +120,202 @@ const TeacherBookingPage: React.FC = () => {
 
     fetchTeacherData();
   }, [customSlug]);
+
+  const loadTeacherTimeSlots = async (teacherId: string) => {
+    if (!db) {
+      // Mock data for development
+      const mockSlots: TimeSlot[] = [
+        {
+          id: '1',
+          date: '2025-10-06',
+          time: '10:00',
+          available: true,
+          duration: 50,
+          lessonType: '1on1',
+          groupSize: 1,
+          currentBookings: 0,
+          maxGroupSize: 1
+        },
+        {
+          id: '2',
+          date: '2025-10-06',
+          time: '11:00',
+          available: true,
+          duration: 50,
+          lessonType: '1on1',
+          groupSize: 1,
+          currentBookings: 0,
+          maxGroupSize: 1
+        },
+        {
+          id: '3',
+          date: '2025-10-07',
+          time: '14:00',
+          available: true,
+          duration: 50,
+          lessonType: '1on1',
+          groupSize: 1,
+          currentBookings: 0,
+          maxGroupSize: 1
+        },
+        {
+          id: '4',
+          date: '2025-10-07',
+          time: '15:00',
+          available: false, // This slot is booked
+          duration: 50,
+          lessonType: '1on1',
+          groupSize: 1,
+          currentBookings: 1,
+          maxGroupSize: 1
+        },
+        {
+          id: '5',
+          date: '2025-10-08',
+          time: '09:00',
+          available: true,
+          duration: 50,
+          lessonType: '1on1',
+          groupSize: 1,
+          currentBookings: 0,
+          maxGroupSize: 1
+        },
+        {
+          id: '6',
+          date: '2025-10-08',
+          time: '10:00',
+          available: true,
+          duration: 50,
+          lessonType: '1on1',
+          groupSize: 1,
+          currentBookings: 0,
+          maxGroupSize: 1
+        },
+        {
+          id: '7',
+          date: '2025-10-09',
+          time: '13:00',
+          available: true,
+          duration: 50,
+          lessonType: '1on1',
+          groupSize: 1,
+          currentBookings: 0,
+          maxGroupSize: 1
+        },
+        {
+          id: '8',
+          date: '2025-10-09',
+          time: '14:00',
+          available: true,
+          duration: 50,
+          lessonType: '1on1',
+          groupSize: 1,
+          currentBookings: 0,
+          maxGroupSize: 1
+        }
+      ];
+      setTimeSlots(mockSlots);
+      return;
+    }
+
+    try {
+      // In a real app, you would fetch from teacherSlots collection
+      // For now, using mock data
+      const mockSlots: TimeSlot[] = [
+        {
+          id: '1',
+          date: '2025-10-06',
+          time: '10:00',
+          available: true,
+          duration: 50,
+          lessonType: '1on1',
+          groupSize: 1,
+          currentBookings: 0,
+          maxGroupSize: 1
+        },
+        {
+          id: '2',
+          date: '2025-10-06',
+          time: '11:00',
+          available: true,
+          duration: 50,
+          lessonType: '1on1',
+          groupSize: 1,
+          currentBookings: 0,
+          maxGroupSize: 1
+        },
+        {
+          id: '3',
+          date: '2025-10-07',
+          time: '14:00',
+          available: true,
+          duration: 50,
+          lessonType: '1on1',
+          groupSize: 1,
+          currentBookings: 0,
+          maxGroupSize: 1
+        },
+        {
+          id: '4',
+          date: '2025-10-07',
+          time: '15:00',
+          available: false, // This slot is booked
+          duration: 50,
+          lessonType: '1on1',
+          groupSize: 1,
+          currentBookings: 1,
+          maxGroupSize: 1
+        },
+        {
+          id: '5',
+          date: '2025-10-08',
+          time: '09:00',
+          available: true,
+          duration: 50,
+          lessonType: '1on1',
+          groupSize: 1,
+          currentBookings: 0,
+          maxGroupSize: 1
+        },
+        {
+          id: '6',
+          date: '2025-10-08',
+          time: '10:00',
+          available: true,
+          duration: 50,
+          lessonType: '1on1',
+          groupSize: 1,
+          currentBookings: 0,
+          maxGroupSize: 1
+        },
+        {
+          id: '7',
+          date: '2025-10-09',
+          time: '13:00',
+          available: true,
+          duration: 50,
+          lessonType: '1on1',
+          groupSize: 1,
+          currentBookings: 0,
+          maxGroupSize: 1
+        },
+        {
+          id: '8',
+          date: '2025-10-09',
+          time: '14:00',
+          available: true,
+          duration: 50,
+          lessonType: '1on1',
+          groupSize: 1,
+          currentBookings: 0,
+          maxGroupSize: 1
+        }
+      ];
+      setTimeSlots(mockSlots);
+    } catch (error) {
+      console.error('Error loading time slots:', error);
+    }
+  };
 
   const handleSlotSelect = (slot: TimeSlot) => {
     if (!slot.available) return;
@@ -311,10 +510,62 @@ const TeacherBookingPage: React.FC = () => {
               <h2 className="text-xl font-bold text-gray-900 mb-4">Available Times</h2>
               <p className="text-gray-600 mb-6">Select the time slots you'd like to book.</p>
               
-              <div className="space-y-4">
-                <p className="text-sm text-gray-500">No time slots available at the moment.</p>
-                <p className="text-sm text-gray-500">Please contact the teacher directly or try the flexible booking option.</p>
-              </div>
+              {timeSlots.length === 0 ? (
+                <div className="space-y-4">
+                  <p className="text-sm text-gray-500">No time slots available at the moment.</p>
+                  <p className="text-sm text-gray-500">Please contact the teacher directly or try the flexible booking option.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {timeSlots.map((slot) => {
+                    const isSelected = selectedSlots.some(s => s.id === slot.id);
+                    return (
+                      <button
+                        key={slot.id}
+                        onClick={() => handleSlotSelect(slot)}
+                        disabled={!slot.available}
+                        className={`w-full p-3 text-left border-2 rounded-lg transition-colors ${
+                          !slot.available
+                            ? 'border-gray-200 bg-gray-100 text-gray-400 cursor-not-allowed'
+                            : isSelected
+                            ? 'border-primary-500 bg-primary-50 text-primary-700'
+                            : 'border-gray-200 hover:border-gray-300 text-gray-700'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="font-medium">
+                              {new Date(slot.date).toLocaleDateString('en-US', {
+                                weekday: 'long',
+                                month: 'short',
+                                day: 'numeric'
+                              })}
+                            </p>
+                            <p className="text-sm">
+                              {slot.time} ({slot.duration} min)
+                            </p>
+                          </div>
+                          <div className="text-right">
+                            {!slot.available ? (
+                              <span className="text-xs bg-red-100 text-red-600 px-2 py-1 rounded">
+                                Booked
+                              </span>
+                            ) : isSelected ? (
+                              <span className="text-xs bg-primary-100 text-primary-600 px-2 py-1 rounded">
+                                Selected
+                              </span>
+                            ) : (
+                              <span className="text-xs bg-green-100 text-green-600 px-2 py-1 rounded">
+                                Available
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
         </div>
